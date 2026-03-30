@@ -92,7 +92,7 @@ These gaps would be the next tests to write before considering the system produc
 
 ## Demo
 
-<a href="/ai110-module2show-pawpal-starter/Screenshot.png" target="_blank"><img src='/ai110-module2show-pawpal-starter/Screenshot.png'title='PawPal App' width='' alt='PawPal App' class='center-block' /></a>
+<a href="Screenshot.png" target="_blank"><img src='Screenshot.png'title='PawPal App' width='' alt='PawPal App' class='center-block' /></a>
 
 ### Run the app locally
 
