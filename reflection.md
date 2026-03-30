@@ -55,6 +55,14 @@ Overall, these changes made the design safer, clearer, and easier to maintain.
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
 
+The scheduler uses **priority-first, first-fit packing**: it sorts optional tasks from highest to lowest priority and slots each one in as long as it fits within the owner's available time budget. It does not try every possible ordering to find the globally optimal schedule.
+
+This means a high-priority 60-minute task near the top of the list could block several shorter medium-priority tasks that would have collectively fit, even though dropping the long task and keeping the shorter ones might actually be a better plan for the owner.
+
+For example, if 90 minutes remain and the next task is a 90-minute bath, the scheduler takes it — leaving nothing for the three 20-minute tasks that follow. A smarter algorithm (like knapsack or branch-and-bound) could find the arrangement that maximizes total priority-weighted minutes, but those approaches are significantly more complex to implement and harder to explain to a non-technical user.
+
+The tradeoff is reasonable here because PawPal+ is a personal daily planner, not a logistics optimizer. Pet owners generally have a clear sense of what matters most, and a schedule that always does the highest-priority task first is easy to understand and trust. Predictability and transparency matter more in this scenario than squeezing out the last few minutes of theoretical efficiency.
+
 ---
 
 ## 3. AI Collaboration

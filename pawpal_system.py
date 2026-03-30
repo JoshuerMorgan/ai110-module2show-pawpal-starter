@@ -1,4 +1,5 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
 from enum import Enum
 from typing import Optional
 
@@ -37,6 +38,7 @@ class Task:
     priority: Priority
     frequency: Frequency = Frequency.DAILY
     completed: bool = False
+    due_date: date = field(default_factory=date.today)
     notes: str = ""
     is_required: bool = False
 
@@ -58,6 +60,25 @@ class Task:
     def reset(self) -> None:
         """Clear completion status (e.g. start of a new day)."""
         self.completed = False
+
+    def next_occurrence(self) -> "Task | None":
+        """
+        Return a fresh copy of this task scheduled for its next occurrence.
+
+        Uses dataclasses.replace to clone every field, then overwrites
+        completed=False and due_date with a timedelta shift based on frequency:
+          - DAILY  → due_date + 1 day
+          - WEEKLY → due_date + 7 days
+          - AS_NEEDED → returns None (one-off tasks don't auto-recur)
+
+        Shifting from self.due_date (not date.today()) prevents drift when a
+        task is completed late — the next occurrence is always relative to when
+        it was supposed to happen, not when it actually got done.
+        """
+        if self.frequency == Frequency.AS_NEEDED:
+            return None
+        delta = timedelta(days=1) if self.frequency == Frequency.DAILY else timedelta(weeks=1)
+        return replace(self, completed=False, due_date=self.due_date + delta)
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +205,7 @@ class Scheduler:
             if self._should_skip(pet, task):
                 continue
             if not self._fits_in_time(task):
-                break
+                continue          # skip this task but keep looking for smaller ones
             self._schedule(pet, task, required=False)
 
         return self.plan
@@ -208,6 +229,117 @@ class Scheduler:
     def total_scheduled_minutes(self) -> int:
         """Sum of durations for all tasks currently in the plan."""
         return sum(st.task.duration_minutes for st in self.plan)
+
+    def complete_task(self, pet: Pet, task: Task) -> "Task | None":
+        """
+        Mark task complete and, for DAILY/WEEKLY tasks, add the next occurrence to the pet.
+
+        Returns the new Task instance if one was created, or None for AS_NEEDED tasks.
+        """
+        task.mark_complete()
+        next_task = task.next_occurrence()
+        if next_task is not None:
+            pet.add_task(next_task)
+        return next_task
+
+    def sort_by_time(self) -> list[ScheduledTask]:
+        """
+        Return the current plan sorted chronologically by start_time.
+
+        Converts each 'HH:MM' string to total minutes since midnight before
+        comparing, so lexicographic string sorting cannot produce wrong order
+        (e.g. '09:05' would sort after '10:00' as a string but before it as
+        a time).  Returns a new list — self.plan is not mutated.
+        """
+        return sorted(self.plan, key=lambda st: self._time_str_to_minutes(st.start_time))
+
+    def filter_tasks(
+        self,
+        pet_name: str | None = None,
+        completed: bool | None = None,
+    ) -> list[tuple[Pet, Task]]:
+        """
+        Return (pet, task) pairs from the owner's full task list matching the given filters.
+
+        pet_name  — if provided, only return tasks belonging to that pet.
+        completed — if True, return only done tasks; if False, only pending; if None, return all.
+        """
+        results = self.owner.get_all_tasks()
+        if pet_name is not None:
+            results = [(pet, task) for pet, task in results if pet.name == pet_name]
+        if completed is not None:
+            results = [(pet, task) for pet, task in results if task.completed == completed]
+        return results
+
+    def due_today(self, today_weekday: int) -> list[tuple[Pet, Task]]:
+        """
+        Return tasks that are due on today_weekday (0 = Monday … 6 = Sunday).
+
+        DAILY tasks are always due.
+        WEEKLY tasks are due only when today_weekday matches their assigned day
+        (stored as task.notes starting with 'weekday:N', e.g. 'weekday:0').
+        AS_NEEDED tasks are never auto-scheduled — they must be added manually.
+        """
+        due = []
+        for pet, task in self.owner.get_all_tasks():
+            if task.frequency.value == "daily":
+                due.append((pet, task))
+            elif task.frequency.value == "weekly":
+                # Expect notes to contain 'weekday:N' for the assigned day
+                for part in task.notes.split():
+                    if part.startswith("weekday:"):
+                        assigned_day = int(part.split(":")[1])
+                        if assigned_day == today_weekday:
+                            due.append((pet, task))
+                        break
+        return due
+
+    def detect_conflicts(self) -> list[str]:
+        """
+        Check every pair of scheduled tasks for time-slot overlaps.
+
+        Compares all pairs (not just adjacent) so nested or non-adjacent
+        overlaps are never missed.  Same-pet conflicts are flagged as
+        ERROR (the owner physically cannot do both); cross-pet conflicts
+        are flagged as WARNING (may be manageable with some juggling).
+        Malformed time strings produce a PARSE ERROR entry instead of
+        crashing the program.  Returns [] when the plan is conflict-free.
+        """
+        conflicts = []
+
+        for i in range(len(self.plan)):
+            for j in range(i + 1, len(self.plan)):
+                a = self.plan[i]
+                b = self.plan[j]
+
+                try:
+                    a_start = self._time_str_to_minutes(a.start_time)
+                    a_end   = self._time_str_to_minutes(a.end_time)
+                    b_start = self._time_str_to_minutes(b.start_time)
+                    b_end   = self._time_str_to_minutes(b.end_time)
+                except (ValueError, AttributeError) as exc:
+                    conflicts.append(
+                        f"PARSE ERROR: could not read times for "
+                        f"'{a.pet.name}: {a.task.title}' or "
+                        f"'{b.pet.name}: {b.task.title}' — {exc}"
+                    )
+                    continue
+
+                # Two intervals overlap when one starts before the other ends
+                overlaps = a_start < b_end and b_start < a_end
+                if not overlaps:
+                    continue
+
+                same_pet = a.pet.name == b.pet.name
+                severity = "ERROR" if same_pet else "WARNING"
+                scope    = "same pet" if same_pet else "different pets"
+                conflicts.append(
+                    f"{severity} ({scope}): "
+                    f"'{a.pet.name}: {a.task.title}' [{a.start_time}-{a.end_time}] overlaps "
+                    f"'{b.pet.name}: {b.task.title}' [{b.start_time}-{b.end_time}]"
+                )
+
+        return conflicts
 
     # -- private helpers -----------------------------------------------------
 
