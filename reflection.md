@@ -106,3 +106,5 @@ The tradeoff is reasonable here because PawPal+ is a personal daily planner, not
 **c. Key takeaway**
 
 - What is one important thing you learned about designing systems or working with AI on this project?
+
+One important thing I learned from this project is that you should always review AI-generated work carefully and back it up with tests. Even if the code looks correct at first glance, it can still contain logic errors or miss important edge cases. Running both automated tests and manual checks is essential to make sure the program works accurately and as intended.
